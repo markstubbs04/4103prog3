@@ -19,7 +19,7 @@
 struct FileInternals;
 
 // file type used by user code
-typedef struct FileInternals* File; 
+typedef struct FileInternals* File; // this will be a struct with at least the File Name and a pointer to its Inode
 
 // access mode for open_file() 
 typedef enum {

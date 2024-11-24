@@ -1,23 +1,26 @@
 #include <stdint.h>
-#include "softwaredisk.h"
+#include "softwaredisk.c"
+#include "filesystem.h"
 
-uint16_t NUM_DIRECT_INODE_BLOCKS = 13;
+#define NUM_DIRECT_INODE_BLOCKS 13
+#define MAX_NUMBER_OF_FILES 512
 
-uint32_t *bitmap;
+FSError Error;
+
 InodeBlock *Inodes;
 
+struct FileInternals { // 300 bytes
+    char *name; // 264 bytes
+    Inode *inode; // 32 bytes
+    _FileMode fileMode; // 1 byte
+};
+
+// file type used by user code
 typedef struct FileInternals *File;
 
-typedef enum
-{
-    READ_ONLY,
-    READ_WRITE
-} FileMode;
-
-typedef struct Inode
+typedef struct Inode // 32 bytes
 {
     uint32_t size;
-    char *name;
     uint16_t b[NUM_DIRECT_INODE_BLOCKS + 1];
 } Inode;
 
@@ -25,6 +28,19 @@ typedef struct InodeBlock
 {
     Inode inodes[SOFTWARE_DISK_BLOCK_SIZE / sizeof(Inode)];
 } InodeBlock;
+
+typedef uint32_t _FileMode; // 4 byte
+
+unsigned char bitmap[SOFTWARE_DISK_BLOCK_SIZE]; // 1024
+
+// HELPER FUNCTIONS:
+
+// fsmalloc that return a "pointer" which is the first blocknum it finds that is free
+
+
+File create_file(char *name) {
+
+}
 
 File open_file(char *name, FileMode mode)
 {
@@ -51,14 +67,11 @@ Inode findInode(char *name)
     }
 }
 
-void formatfs()
-{
+void formatfs() {
     init_software_disk();
-
-    bitmap = malloc(software_disk_size() * sizeof(bitmap));
     memset(bitmap, 0, software_disk_size() * sizeof(bitmap));
-
-    Inodes = malloc(sizeof(InodeBlock));
+    
+    //Inodes = malloc(sizeof(InodeBlock));
 };
 
 int main()
