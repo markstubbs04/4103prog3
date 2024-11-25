@@ -12,6 +12,7 @@
 #define SOFTWARE_DISK_BLOCK_SIZE 6740
 
 #define MAX_FILE_NAME_SIZE 472
+#define MAX_FILE_SIZE 26, 624
 
 FSError Error;
 
@@ -54,7 +55,7 @@ BitMap bitmap;
 
 InodeBlock inodeBlockArray[INODE_ARRAY_BLOCK_SIZE];
 
-File files[MAX_NUMBER_OF_FILES]; // array of all the fileinternal pointers
+struct FileInternals files[MAX_NUMBER_OF_FILES]; // array of all the fileinternal pointers
 
 // unsigned char bitmap[SOFTWARE_DISK_BLOCK_SIZE]; // 1024
 // memset(bitmap, 0, software_disk_size() * sizeof(bitmap));
@@ -74,12 +75,12 @@ File create_file(char *name) // might need to add a null terminating character d
     int32_t index = -1; // tracks the index
     for (int i = 0; i < MAX_NUMBER_OF_FILES; i++)
     {
-        if (files[i] != NULL && !strcmp(files[i]->name, name))
+        if (files[i].name != NULL && !strcmp(files[i].name, name))
         {
             Error = FS_FILE_ALREADY_EXISTS;
             return NULL;
         }
-        else if (files[i] == 0)
+        else if (files[i].name == NULL) // LOOK AT THIS LOGIC NOT SURE IF IT IS CORRECT
         {
             index = i;
         }
@@ -91,14 +92,13 @@ File create_file(char *name) // might need to add a null terminating character d
         return NULL;
     }
 
-    File newfile = malloc(sizeof(struct FileInternals));
-    files[index] = newfile;
+    File newfile = &files[index];
     strcpy(newfile->name, name);
     newfile->filePosition = 0;
 
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 8; i++) // number of inode blocks
     {
-        for (int j = 0; j < 32; j++)
+        for (int j = 0; j < 32; j++) // number of inodes in a block
         {
             if (inodeBlockArray[i].inodes[j].size == -1)
             {
@@ -124,9 +124,9 @@ bool file_exists(char *name)
 {
     for (int i = 0; i < MAX_NUMBER_OF_FILES; i++)
     {
-        if (files[i] != NULL)
+        if (files[i].name != NULL)
         {
-            if (!strcmp(files[i]->name, name))
+            if (!strcmp(files[i].name, name))
             {
                 return true;
             }
@@ -141,9 +141,9 @@ File open_file(char *name, FileMode mode)
     int index = -1;
     for (int i = 0; i < MAX_NUMBER_OF_FILES; i++)
     {
-        if (files[i] != NULL)
+        if (files[i].name != NULL)
         {
-            if (!strcmp(files[i]->name, name))
+            if (!strcmp(files[i].name, name))
             {
                 index = i;
             }
@@ -152,7 +152,7 @@ File open_file(char *name, FileMode mode)
 
     if (index != -1)
     {
-        file = files[index];
+        file = &files[index];
     }
     else
     {
@@ -160,16 +160,9 @@ File open_file(char *name, FileMode mode)
         return NULL;
     }
     file->fileMode = mode;
+    file->filePosition = 0; // File Position always set to 0
 
     // check if file already has space
-    // find a free space
-    // for (int j = 0; j < NUM_DIRECT_INODE_BLOCKS + 1; j++)
-    // {
-    //     if (j == NUM_DIRECT_INODE_BLOCKS)
-    //     {
-    //         // indirect
-    //     }
-
     if (file->inode->blocks[0] == 0) // only on new files that have no allocated blocks
     {
         int16_t blocknum = findFreeSpace();
@@ -185,8 +178,122 @@ File open_file(char *name, FileMode mode)
     return file;
 }
 
-uint64_t write_file(File file, void *buf, uint64_t numbytes)
-{ // I think we need to check bitmap and request space from the software disk and get that blocknum (pointer)
+void close_file(File file)
+{
+    if (file == NULL)
+    {
+        return;
+    }
+    free(file);
+}
+
+bool delete_file(char *name)
+{
+    // File file;
+    // int index = -1;
+    // for (int i = 0; i < MAX_NUMBER_OF_FILES; i++)
+    // {
+    //     if (files[i].name != NULL)
+    //     {
+    //         if (!strcmp(files[i].name, name))
+    //         {
+    //             index = i;
+    //         }
+    //     }
+    // }
+    File file;
+    if (findFileIndex(name) > 0)
+    {
+    }
+    else
+    {
+        return false;
+    }
+}
+
+uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need to check bitmap and request space from the software disk and get that blocknum (pointer)
+{
+    // need to use the filePosition in the file and find the remainder / 1024 to get the index in the blocks to write to
+    char *buffer = (char *)buf;
+    int currBuffSize = 0;
+    int positionInBuffer = 0;
+    int bytesWritten = 0;
+
+    int blockIndex = file->filePosition / SOFTWARE_DISK_BLOCK_SIZE;
+    int positionInBlock = file->filePosition % SOFTWARE_DISK_BLOCK_SIZE;
+
+    char tempBuffer[SOFTWARE_DISK_BLOCK_SIZE];
+
+    if (blockIndex < 14)
+    {
+        read_sd_block(tempBuffer, file->inode->blocks[blockIndex]); // read what is currently in the block
+    }
+    else
+    {
+        // move to indiret block
+    }
+
+    // need to make sure buf + positionInBlock < 1024
+
+    while (positionInBlock < 1024 && numbytes > 0)
+    {
+        if (positionInBlock + numbytes > 1024)
+        {
+            currBuffSize = 1024 - positionInBlock;
+            strncat(tempBuffer, buf + positionInBuffer, currBuffSize);
+            positionInBuffer += currBuffSize;
+            numbytes -= currBuffSize;
+            bytesWritten += currBuffSize;
+            file->filePosition += currBuffSize;
+
+            if (!write_sd_block(tempBuffer, file->inode->blocks[blockIndex]))
+            {
+                Error = FS_IO_ERROR;
+                return bytesWritten; // make sure that this is correct might cause problems
+            }
+
+            // go to next block
+            blockIndex++;
+            positionInBlock = 0;
+
+            if (blockIndex == 14)
+            {
+                // move to indiret block
+            }
+
+            read_sd_block(tempBuffer, file->inode->blocks[blockIndex++]);
+        }
+        else
+        {
+            file->filePosition += numbytes;
+            bytesWritten += numbytes;
+            strcat(tempBuffer, buf);
+            if (!write_sd_block(tempBuffer, file->inode->blocks[blockIndex]))
+            {
+                Error = FS_IO_ERROR;
+                return bytesWritten; // make sure that this is correct might cause problems
+            }
+            return bytesWritten;
+        }
+    }
+    return bytesWritten;
+}
+
+int findFileIndex(char *name)
+{ // returns the spot in the files array of FileInternals where name is, -1 if does not exist
+    File file;
+    int index = -1;
+    for (int i = 0; i < MAX_NUMBER_OF_FILES; i++)
+    {
+        if (files[i].name != NULL)
+        {
+            if (!strcmp(files[i].name, name))
+            {
+                index = i;
+            }
+        }
+    }
+    return index;
 }
 
 // bitmap helper functions
