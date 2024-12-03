@@ -1,38 +1,33 @@
 #include <stdint.h>
-#include "softwaredisk.c"
-// #include "filesystem.h"
-#include "filesystem.c"
+#include <string.h>
+#include "softwaredisk.h"
+#include "filesystem.h"
+
+// Also have to redeclare it here to use
+typedef struct FreeBitmap
+{
+    unsigned char map[SOFTWARE_DISK_BLOCK_SIZE];
+} FreeBitmap;
+
+extern FreeBitmap bitmap; // need this so we can use it here
+
+// set jth bit in a bitmap composed of 8-bit integers
+void set_jth_bit(uint64_t j)
+{
+    bitmap.map[j / 8] |= (1 << (j % 8));
+}
 
 void formatfs()
 {
     init_software_disk();
 
-    memset(bitmap.map, 0, software_disk_size() * sizeof(bitmap.map));
-    set_bit(0);
+    memset(bitmap.map, 0, SOFTWARE_DISK_BLOCK_SIZE);
+    set_jth_bit(0);
     write_sd_block(bitmap.map, 0);
-
-    // setting bitmap block + 8 blocks for the inode block array as taken
-    // for (uint64_t i = 0; i < (BITMAP_BLOCK_SIZE + INODE_ARRAY_BLOCK_SIZE + FILES_ARRAY_BLOCK_SIZE); i++)
-    // {
-    //     set_bit(i);
-    // }
-
-    // initialize Inode Block Array
-    // for (int i = 0; i < 8; i++)
-    // {
-    //     for (int j = 0; j < 32; j++)
-    //     {
-    //         Inode inode;
-    //         inode.size = -1;
-    //         bzero(inode.blocks);
-    //         inodeBlockArray[i].inodes[j] = inode;
-    //     }
-    // }
 };
 
 int main()
 {
     formatfs();
-
-    // uint16_t numBlocks = software_disk_size();
+    return 0;
 };

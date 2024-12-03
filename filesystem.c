@@ -109,55 +109,6 @@ struct FileInternals files[MAX_NUMBER_OF_FILES]; // array of all the fileinterna
 
 // HELPER FUNCTIONS:
 
-// BITMAP HELPERS:
-// set jth bit in a bitmap composed of 8-bit integers
-void set_bit(uint64_t j)
-{
-    bitmap.map[j / 8] != (1 << (j % 8));
-}
-
-// clear jth bit in a bitmap composed of 8-but integers
-void clear_bit(uint64_t j)
-{
-    bitmap.map[j / 8] &= ~(1 << (j % 8));
-}
-
-// returns true if jth bit is set in a bitap of 8-bit integers,
-// otherwise false
-bool is_bit_set(unsigned char *bitmap, uint64_t j)
-{
-    return bitmap[j / 8] & (1 << (j % 8));
-}
-
-int16_t findDirEntry(char *name)
-{
-    char buf[SOFTWARE_DISK_BLOCK_SIZE];
-    read_sd_block(bitmap.map, 0);
-    for (uint16_t i = DIR_ENTRY_FIRST_BLOCKNUM; i < DIR_ENTRY_FIRST_BLOCKNUM + MAX_NUMBER_OF_FILES; i++)
-    {
-        if (is_bit_set(bitmap.map, i))
-        {
-            if (!read_sd_block(buf, i))
-            {
-                fserror = FS_IO_ERROR;
-                return -1;
-            }
-            int len = strlen(name);
-            char nameBuf[1024];
-            memcpy(nameBuf, buf, 1023);
-            nameBuf[1023] = '\0';
-
-            if (!strcmp(nameBuf, name))
-            {
-                fserror = FS_NONE;
-                return i + DIR_ENTRY_FIRST_BLOCKNUM;
-            }
-        }
-    }
-    fserror = FS_FILE_ALREADY_EXISTS;
-    return -1;
-}
-
 size_t get_data_size(DataType type)
 {
     switch (type)
@@ -181,14 +132,14 @@ unsigned char *read_data_from_disk(uint16_t blocknum, uint32_t position)
     {
         return NULL;
     }
-    char buf[SOFTWARE_DISK_BLOCK_SIZE] = {'\0'};
+    unsigned char buf[SOFTWARE_DISK_BLOCK_SIZE] = {'\0'};
 
     if (!read_sd_block(buf, blocknum))
     {
         fserror = FS_FILE_NOT_FOUND;
         return NULL;
     }
-    char *data = malloc(sizeof(char) * ((SOFTWARE_DISK_BLOCK_SIZE - position) + 1));
+    unsigned char *data = malloc(sizeof(char) * ((SOFTWARE_DISK_BLOCK_SIZE - position) + 1));
     if (!data)
     {
         return NULL;
@@ -270,7 +221,50 @@ char *getFullFileName(char *name, int length)
     return padded_name;
 }
 
-// bitmap helper functions
+// BITMAP HELPERS:
+// set jth bit in a bitmap composed of 8-bit integers
+void set_bit(uint64_t j)
+{
+    bitmap.map[j / 8] |= (1 << (j % 8));
+}
+
+// clear jth bit in a bitmap composed of 8-but integers
+void clear_bit(uint64_t j)
+{
+    bitmap.map[j / 8] &= ~(1 << (j % 8));
+}
+
+// returns true if jth bit is set in a bitap of 8-bit integers,
+// otherwise false
+bool is_bit_set(unsigned char *bitmap, uint64_t j)
+{
+    return bitmap[j / 8] & (1 << (j % 8));
+}
+
+int16_t findDirEntry(char *name)
+{
+    // char buf[SOFTWARE_DISK_BLOCK_SIZE];
+    read_sd_block(bitmap.map, 0);
+    for (uint16_t i = DIR_ENTRY_FIRST_BLOCKNUM; i < DIR_ENTRY_FIRST_BLOCKNUM + MAX_NUMBER_OF_FILES; i++)
+    {
+        if (is_bit_set(bitmap.map, i))
+        {
+            DirEntry *dirEntry = (DirEntry *)read_from_disk(DIRECTORY_ENTRY, i);
+            if (dirEntry == NULL) {
+                fserror = FS_IO_ERROR;
+                return -1;
+            }
+
+            if (!strcmp(dirEntry->name, name))
+            {
+                fserror = FS_NONE;
+                return i + DIR_ENTRY_FIRST_BLOCKNUM;
+            }
+        }
+    }
+    fserror = FS_FILE_ALREADY_EXISTS;
+    return -1;
+}
 
 // finds free space in the bitmap
 int16_t findFreeSpace()
@@ -477,28 +471,28 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
     int blockIndex = file->filePosition / SOFTWARE_DISK_BLOCK_SIZE;
     int positionInBlock = file->filePosition % SOFTWARE_DISK_BLOCK_SIZE;
     int indirectBlockIndex = 0;
-    if (blockIndex > 14)
+    if (blockIndex > NUM_DIRECT_INODE_BLOCKS)
     {
-        indirectBlockIndex = blockIndex - 14;
-        blockIndex = 14;
+        indirectBlockIndex = blockIndex - NUM_DIRECT_INODE_BLOCKS;
+        blockIndex = NUM_DIRECT_INODE_BLOCKS;
     }
     int currBlock = blockIndex;
 
     // 13 direct + 1 indirect block, so dont want to exceed. 0 is a not set block
-    while (currBlock < 15 && indirectBlockIndex < MAX_INDIRECT_BLOCK && file->inode->blocks[currBlock] != 0 && bytesRead + file->filePosition < size)
+    while (currBlock <= NUM_DIRECT_INODE_BLOCKS+1 && indirectBlockIndex < MAX_INDIRECT_BLOCK && file->inode->blocks[currBlock] != 0 && bytesRead + file->filePosition < size)
     {
-        if (currBlock > 13) // at indirect block
+        if (currBlock > NUM_DIRECT_INODE_BLOCKS) // at indirect block
         {
             int currIndirectBlock = indirectBlockIndex;
-            uint16_t *indirectBlocks = (uint16_t *)read_from_disk(file->inode->blocks[14], BLOCKS);
+            uint16_t *indirectBlocks = (uint16_t *)read_from_disk(file->inode->blocks[NUM_DIRECT_INODE_BLOCKS], BLOCKS);
 
             while (currIndirectBlock < MAX_INDIRECT_BLOCK && indirectBlocks[currIndirectBlock] != 0 && bytesRead + file->filePosition < size)
             {
                 // READ WHAT IS IN FRONT STARTING AT POSITION IN BLOCK
-                unsigned char *currBuf = malloc((SOFTWARE_DISK_BLOCK_SIZE - positionInBlock + 1) * sizeof(char));
+                // unsigned char *currBuf = malloc((SOFTWARE_DISK_BLOCK_SIZE - positionInBlock + 1) * sizeof(char));
                 // Software disk block size is 1024, so subtract the current position to get how many bytes you need to read total
                 //  Ex: if positionInBlock is 0 then we want to read SOFTWARE_DISK_BLOCK_SIZE size data, not positionInBlock size data
-                currBuf = read_data_from_disk(currIndirectBlock, positionInBlock);
+                unsigned char *currBuf = read_data_from_disk(currIndirectBlock, positionInBlock);
                 // for every iteration other than the first iteration the position is 0
                 if (currBuf == NULL)
                 {
@@ -506,7 +500,7 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                     break;
                 }
 
-                uint64_t currLength = strlen(currBuf);
+                uint64_t currLength = strlen((const char *) currBuf);
                 int bytesLeftToRead = numbytes - bytesRead;
                 // going to read more than the length of the file
                 if (bytesLeftToRead + file->filePosition > file->inode->size)
@@ -521,13 +515,13 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                     if (SOFTWARE_DISK_BLOCK_SIZE - positionInBlock < bytesLeftToRead)
                     {
                         bytesLeftToRead = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
-                        strcat_s(tempBuf, bytesLeftToRead, currBuf);
+                        strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
                         bytesRead += bytesLeftToRead;
                     }
                     else
                     {
                         // WE ARE DONE READING RAN OUT OF SPACE
-                        strcat_s(tempBuf, bytesLeftToRead, currBuf);
+                        strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
                         bytesRead += bytesLeftToRead;
                         break;
                     }
@@ -540,7 +534,7 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                     { // if the end of the file comes after how far I want to read
                         bytesLeftToRead = numbytes - bytesRead;
                     }
-                    strcat_s(tempBuf, bytesLeftToRead, currBuf);
+                    strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
                     bytesRead += bytesLeftToRead;
                 }
 
@@ -552,17 +546,17 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
         else
         { // direct blocks
             // READ WHAT IS IN FRONT STARTING AT POSITION IN BLOCK
-            unsigned char *currBuf = malloc((SOFTWARE_DISK_BLOCK_SIZE - positionInBlock + 1) * sizeof(char));
+            // unsigned char *currBuf = malloc((SOFTWARE_DISK_BLOCK_SIZE - positionInBlock + 1) * sizeof(char));
             // Software disk block size is 1024, so subtract the current position to get how many bytes you need to read total
             //  Ex: if positionInBlock is 0 then we want to read SOFTWARE_DISK_BLOCK_SIZE size data, not positionInBlock size data
-            currBuf = read_data_from_disk(currBlock, positionInBlock);
+            unsigned char *currBuf = read_data_from_disk(currBlock, positionInBlock);
             // for every iteration other than the first iteration the position is 0
             if (currBuf == NULL)
             {
                 fserror = FS_IO_ERROR;
                 break;
             }
-            uint64_t currLength = strlen(currBuf);
+            uint64_t currLength = strlen((const char *) currBuf);
             int bytesLeftToRead = numbytes - bytesRead;
             // going to read more than the length of the file
             if (bytesLeftToRead + file->filePosition > file->inode->size)
@@ -577,13 +571,13 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                 if (SOFTWARE_DISK_BLOCK_SIZE - positionInBlock < bytesLeftToRead)
                 {
                     bytesLeftToRead = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
-                    strcat_s(tempBuf, bytesLeftToRead, currBuf);
+                    strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
                     bytesRead += bytesLeftToRead;
                 }
                 else
                 {
                     // WE ARE DONE READING RAN OUT OF SPACE
-                    strcat_s(tempBuf, bytesLeftToRead, currBuf);
+                    strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
                     bytesRead += bytesLeftToRead;
                     break;
                 }
@@ -596,7 +590,7 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                 { // if the end of the file comes after how far I want to read
                     bytesLeftToRead = numbytes - bytesRead;
                 }
-                strcat_s(tempBuf, bytesLeftToRead, currBuf);
+                strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
                 bytesRead += bytesLeftToRead;
             }
 
@@ -672,9 +666,9 @@ bool delete_file(char *name)
             clear_bit(inode->blocks[i]); // set bitmap
         }
     }
-    if (inode->blocks[14])
+    if (inode->blocks[NUM_DIRECT_INODE_BLOCKS])
     {
-        uint16_t *indirectBlocks = (uint16_t *)read_from_disk(inode->blocks[14], BLOCKS);
+        uint16_t *indirectBlocks = (uint16_t *)read_from_disk(inode->blocks[NUM_DIRECT_INODE_BLOCKS], BLOCKS);
         int i = 0;
         while (indirectBlocks[i] != (uint16_t)0)
         {
@@ -682,8 +676,8 @@ bool delete_file(char *name)
             clear_bit(indirectBlocks[i]); // set bitmap
             i++;
         }
-        clear_block(inode->blocks[14]);
-        clear_bit(inode->blocks[14]); // set bitmap
+        clear_block(inode->blocks[NUM_DIRECT_INODE_BLOCKS]);
+        clear_bit(inode->blocks[NUM_DIRECT_INODE_BLOCKS]); // set bitmap
         free(indirectBlocks);
     }
     clear_block(inodeBlockNum);
@@ -718,17 +712,17 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
     int blockIndex = file->filePosition / SOFTWARE_DISK_BLOCK_SIZE;
     int positionInBlock = file->filePosition % SOFTWARE_DISK_BLOCK_SIZE;
     int indirectBlockIndex = 0;
-    if (blockIndex > 14)
+    if (blockIndex > NUM_DIRECT_INODE_BLOCKS)
     {
-        indirectBlockIndex = blockIndex - 14;
-        blockIndex = 14;
+        indirectBlockIndex = blockIndex - NUM_DIRECT_INODE_BLOCKS;
+        blockIndex = NUM_DIRECT_INODE_BLOCKS;
     }
     int currBlock = blockIndex;
 
     // 13 direct + 1 indirect block, so dont want to exceed. 0 is a not set block
-    while (currBlock < 15 && indirectBlockIndex < MAX_INDIRECT_BLOCK && bytesWritten <= numbytes)
+    while (currBlock <= NUM_DIRECT_INODE_BLOCKS && indirectBlockIndex < MAX_INDIRECT_BLOCK && bytesWritten <= numbytes)
     {
-        if (currBlock > 13) // at indirect block
+        if (currBlock > NUM_DIRECT_INODE_BLOCKS) // at indirect block
         {
             int currIndirectBlock = indirectBlockIndex;
             if (currIndirectBlock >= MAX_INDIRECT_BLOCK)
@@ -736,7 +730,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                 fserror = FS_EXCEEDS_MAX_FILE_SIZE;
                 break;
             }
-            uint16_t *indirectBlocks = (uint16_t *)read_from_disk(file->inode->blocks[14], BLOCKS);
+            uint16_t *indirectBlocks = (uint16_t *)read_from_disk(file->inode->blocks[NUM_DIRECT_INODE_BLOCKS], BLOCKS);
 
             while (currIndirectBlock < MAX_INDIRECT_BLOCK)
             {
@@ -766,8 +760,8 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                         break;
                     }
                 }
-                unsigned char *currBuf = malloc(SOFTWARE_DISK_BLOCK_SIZE + 1);
-                currBuf = read_data_from_disk(file->inode->blocks[currBlock], 0);
+                // unsigned char *currBuf = malloc(SOFTWARE_DISK_BLOCK_SIZE + 1);
+                unsigned char *currBuf = read_data_from_disk(file->inode->blocks[currBlock], 0);
                 if (currBuf == NULL)
                 {
                     fserror = FS_IO_ERROR;
@@ -783,7 +777,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                 if (bytesToWrite <= remainingSpaceInBlock)
                 {
                     // fully writing then we're done
-                    strncpy(currBuf + positionInBlock, buf, bytesToWrite);
+                    strncpy((char *)currBuf + positionInBlock, buf, bytesToWrite);
                     bytesWritten += bytesToWrite;
                     if (!write_to_disk(currBuf, BLOCKS, file->inode->blocks[currBlock]))
                     {
@@ -796,7 +790,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                 else
                 {
                     // cant fit all lof buf in remaining space
-                    strncpy(currBuf + positionInBlock, buf, remainingSpaceInBlock);
+                    strncpy((char *)currBuf + positionInBlock, buf, remainingSpaceInBlock);
                     bytesWritten += remainingSpaceInBlock;
                     if (!write_to_disk(currBuf, BLOCKS, file->inode->blocks[currBlock]))
                     {
@@ -840,8 +834,8 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                     break;
                 }
             }
-            unsigned char *currBuf = malloc(SOFTWARE_DISK_BLOCK_SIZE + 1);
-            currBuf = read_data_from_disk(file->inode->blocks[currBlock], 0);
+            // unsigned char *currBuf = malloc(SOFTWARE_DISK_BLOCK_SIZE + 1);
+            unsigned char *currBuf = read_data_from_disk(file->inode->blocks[currBlock], 0);
             if (currBuf == NULL)
             {
                 fserror = FS_IO_ERROR;
@@ -858,7 +852,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
             {
                 // fully writing then we're done
 
-                strncpy(currBuf + positionInBlock, buf, bytesToWrite);
+                strncpy((char *)currBuf + positionInBlock, buf, bytesToWrite);
                 bytesWritten += bytesToWrite;
                 if (!write_to_disk(currBuf, BLOCKS, file->inode->blocks[currBlock]))
                 {
@@ -871,7 +865,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
             else
             {
                 // cant fit all lof buf in remaining space
-                strncpy(currBuf + positionInBlock, buf, remainingSpaceInBlock);
+                strncpy((char *)currBuf + positionInBlock, buf, remainingSpaceInBlock);
                 bytesWritten += remainingSpaceInBlock;
                 if (!write_to_disk(currBuf, BLOCKS, file->inode->blocks[currBlock]))
                 {
