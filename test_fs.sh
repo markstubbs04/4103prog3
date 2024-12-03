@@ -8,5 +8,4 @@ gcc -g -o testfs4a testfs4a.c filesystem.c softwaredisk.c && gcc -g -o testfs4b 
 gcc -g -o testfs5a testfs5a.c filesystem.c softwaredisk.c && gcc -g -o testfs5b testfs5b.c filesystem.c softwaredisk.c && ./formatfs && ./testfs5a && ./testfs5b
 
 # ONLY if your implementation is thread safe!
-gcc -g -o testfs-threads testfs-threads.c filesystem.c softwaredisk.c && ./formatfs && ./testfs-threads
-
+# gcc -g -o testfs-threads testfs-threads.c filesystem.c softwaredisk.c && ./formatfs && ./testfs-threads

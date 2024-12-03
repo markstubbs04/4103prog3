@@ -8,6 +8,8 @@
 #include "softwaredisk.h"
 #include "filesystem.h"
 
+// Alex Brodsky && Mark Stubbs
+
 /*
 Bitmap:
 1 block = 8,192 blocks

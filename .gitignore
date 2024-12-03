@@ -23,7 +23,9 @@ testfs4b
 testfs4b.dSYM/
 
 testfs5a
+testfs5a.dSYM/
+
+testfs5b
 testfs5b.dSYM/
 
-testfs5a
-testfs5b.dSYM/
+sdprivate.sd
