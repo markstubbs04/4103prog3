@@ -46,7 +46,7 @@ So, once the user gets to 7679 blocks, they will not be allowed to make anymore 
 
 #define FILE_SYSTEM_SIZE 8192
 
-#define MAX_FILE_NAME_SIZE 1022
+#define MAX_FILE_NAME_SIZE 1021
 #define MAX_FILE_SIZE 256
 
 // FSError Error;
@@ -70,7 +70,8 @@ typedef struct FileInternals *File;
 
 typedef struct DirEntry
 {                           // 1024 total
-    char *name;             // min 257 actually 1022
+    char *name;             // min 257 actually 1021
+    bool isFileOpen;        // 1 byte
     uint16_t inodeBlockNum; // 2 bytes
 } DirEntry;
 
@@ -162,6 +163,7 @@ File create_file(char *name) // might need to add a null terminating character d
         return NULL;
     }
     file->inode->blocks[0] = (uint16_t)blocknum;
+    clear_block(blocknum);
     set_bit((uint16_t)blocknum); // setting bitmap for when we allocate a block to newly opened file data
 
     // find a free space for the inode and dir entry
@@ -294,8 +296,12 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
 
             while (currIndirectBlock < MAX_INDIRECT_BLOCK && indirectBlocks[currIndirectBlock] != (uint16_t)0)
             {
+                // READ WHAT IS IN FRONT STARTING AT POSITION IN BLOCK
                 unsigned char *currBuf = malloc((SOFTWARE_DISK_BLOCK_SIZE - positionInBlock + 1) * sizeof(char));
+                // Software disk block size is 1024, so subtract the current position to get how many bytes you need to read total
+                //  Ex: if positionInBlock is 0 then we want to read SOFTWARE_DISK_BLOCK_SIZE size data, not positionInBlock size data
                 currBuf = read_data_from_disk(currIndirectBlock, positionInBlock);
+                // for every iteration other than the first iteration the position is 0
                 if (currBuf == NULL)
                 {
                     fserror = FS_IO_ERROR;
@@ -352,7 +358,7 @@ bool seek_file(File file, uint64_t bytepos)
     int blockIndex = bytepos / SOFTWARE_DISK_BLOCK_SIZE;
     int positionInBlock = bytepos % SOFTWARE_DISK_BLOCK_SIZE;
 
-    if (blockIndex > MAX_DIRECT_BLOCK + MAX_INDIRECT_BLOCK)
+    if (blockIndex > MAX_DIRECT_BLOCK + MAX_INDIRECT_BLOCK || file->inode->size < bytepos)
     {
         fserror = FS_EXCEEDS_MAX_FILE_SIZE;
         return false;
@@ -432,72 +438,232 @@ bool delete_file(char *name)
     return true;
 }
 
+// starts writing at the current position and overwrites
 uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need to check bitmap and request space from the software disk and get that blocknum (pointer)
 {
     // need to use the filePosition in the file and find the remainder / 1024 to get the index in the blocks to write to
-    char *buffer = (char *)buf;
-    int currBuffSize = 0;
-    int positionInBuffer = 0;
-    int bytesWritten = 0;
+    // char *buffer = (char *)buf;
+    // int currBuffSize = 0;
+    // int positionInBuffer = 0;
+    // int bytesWritten = 0;
+
+    // int blockIndex = file->filePosition / SOFTWARE_DISK_BLOCK_SIZE;
+    // int positionInBlock = file->filePosition % SOFTWARE_DISK_BLOCK_SIZE;
+
+    // char tempBuffer[SOFTWARE_DISK_BLOCK_SIZE];
+
+    // if (blockIndex < 14)
+    // {
+    //     read_sd_block(tempBuffer, file->inode->blocks[blockIndex]); // read what is currently in the block
+    // }
+    // else
+    // {
+    //     // move to indiret block
+    // }
+
+    // // need to make sure buf + positionInBlock < 1024
+
+    // while (positionInBlock < 1024 && numbytes > 0)
+    // {
+    //     if (positionInBlock + numbytes > 1024)
+    //     {
+    //         currBuffSize = 1024 - positionInBlock;
+    //         strncat(tempBuffer, buf + positionInBuffer, currBuffSize);
+    //         positionInBuffer += currBuffSize;
+    //         numbytes -= currBuffSize;
+    //         bytesWritten += currBuffSize;
+    //         file->filePosition += currBuffSize;
+
+    //         if (!write_sd_block(tempBuffer, file->inode->blocks[blockIndex]))
+    //         {
+    //             fserror = FS_IO_ERROR;
+    //             return bytesWritten; // make sure that this is correct might cause problems
+    //         }
+
+    //         // go to next block
+    //         blockIndex++;
+    //         positionInBlock = 0;
+
+    //         if (blockIndex == 14)
+    //         {
+    //             // move to indiret block
+    //         }
+
+    //         read_sd_block(tempBuffer, file->inode->blocks[blockIndex++]);
+    //     }
+    //     else
+    //     {
+    //         file->filePosition += numbytes;
+    //         bytesWritten += numbytes;
+    //         strcat(tempBuffer, buf);
+    //         if (!write_sd_block(tempBuffer, file->inode->blocks[blockIndex]))
+    //         {
+    //             fserror = FS_IO_ERROR;
+    //             return bytesWritten; // make sure that this is correct might cause problems
+    //         }
+    //         return bytesWritten;
+    //     }
+    // }
+    // fserror = FS_NONE;
+    // return bytesWritten;
+
+    // char tempBuf = malloc(numbytes * sizeof(char));
+    uint64_t bytesWritten = 0;
+    // uint64_t bytesToWrite = numbytes;
 
     int blockIndex = file->filePosition / SOFTWARE_DISK_BLOCK_SIZE;
     int positionInBlock = file->filePosition % SOFTWARE_DISK_BLOCK_SIZE;
-
-    char tempBuffer[SOFTWARE_DISK_BLOCK_SIZE];
-
-    if (blockIndex < 14)
+    int indirectBlockIndex = 0;
+    if (blockIndex > 14)
     {
-        read_sd_block(tempBuffer, file->inode->blocks[blockIndex]); // read what is currently in the block
+        indirectBlockIndex = blockIndex - 14;
+        blockIndex = 14;
     }
-    else
-    {
-        // move to indiret block
-    }
+    int currBlock = blockIndex;
 
-    // need to make sure buf + positionInBlock < 1024
-
-    while (positionInBlock < 1024 && numbytes > 0)
+    // 13 direct + 1 indirect block, so dont want to exceed. 0 is a not set block
+    while (currBlock < 15 && indirectBlockIndex < MAX_INDIRECT_BLOCK && bytesWritten <= numbytes)
     {
-        if (positionInBlock + numbytes > 1024)
+        if (currBlock > 13) // at indirect block
         {
-            currBuffSize = 1024 - positionInBlock;
-            strncat(tempBuffer, buf + positionInBuffer, currBuffSize);
-            positionInBuffer += currBuffSize;
-            numbytes -= currBuffSize;
-            bytesWritten += currBuffSize;
-            file->filePosition += currBuffSize;
-
-            if (!write_sd_block(tempBuffer, file->inode->blocks[blockIndex]))
+            int currIndirectBlock = indirectBlockIndex;
+            if (currIndirectBlock >= MAX_INDIRECT_BLOCK)
             {
-                fserror = FS_IO_ERROR;
-                return bytesWritten; // make sure that this is correct might cause problems
+                fserror = FS_EXCEEDS_MAX_FILE_SIZE;
+                break;
             }
+            uint16_t *indirectBlocks = (uint16_t *)read_from_disk(file->inode->blocks[14], BLOCKS);
 
-            // go to next block
-            blockIndex++;
-            positionInBlock = 0;
-
-            if (blockIndex == 14)
+            while (currIndirectBlock < MAX_INDIRECT_BLOCK)
             {
-                // move to indiret block
-            }
+                if (indirectBlocks[currIndirectBlock] == NULL)
+                {
+                    if (!read_sd_block(bitmap.map, 0))
+                    {
+                        fserror = FS_IO_ERROR;
+                        break;
+                    }
+                    int16_t blockNum = findFreeSpace();
+                    if (blockNum == -1)
+                    {
+                        fserror = FS_OUT_OF_SPACE;
+                        break;
+                    }
+                    set_bit(blockNum);
+                    if (!write_sd_block(bitmap.map, 0))
+                    {
+                        fserror = FS_IO_ERROR;
+                        break;
+                    }
+                    indirectBlocks[currIndirectBlock] = blockNum;
+                    if (!write_to_disk(file->inode, INODE, file->directoryEntry->inodeBlockNum))
+                    {
+                        fserror = FS_IO_ERROR;
+                        break;
+                    }
+                }
+                unsigned char *currBuf = malloc(SOFTWARE_DISK_BLOCK_SIZE);
+                currBuf = read_data_from_disk(file->inode->blocks[currBlock], 0);
+                if (currBuf == NULL)
+                {
+                    fserror = FS_IO_ERROR;
+                    break;
+                }
+                int bytesToWrite = numbytes - bytesWritten;
+                int remainingSpaceInBlock = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
 
-            read_sd_block(tempBuffer, file->inode->blocks[blockIndex++]);
+                // need to figure out how many we can write to the file
+
+                // 2 options:
+                // we can fit the entire numbytes left in this block
+                if (bytesToWrite <= remainingSpaceInBlock)
+                {
+                    // fully writing then we're done
+                    strncpy(currBuf + positionInBlock, buf, bytesToWrite);
+                    bytesWritten += bytesToWrite;
+                    write_to_disk(currBuf, BLOCKS, file->inode->blocks[currBlock]);
+                    positionInBlock = 0;
+                    break;
+                }
+                else
+                {
+                    // cant fit all lof buf in remaining space
+                    strncpy(currBuf + positionInBlock, buf, remainingSpaceInBlock);
+                    bytesWritten += remainingSpaceInBlock;
+                    write_to_disk(currBuf, BLOCKS, file->inode->blocks[currBlock]);
+                    positionInBlock = 0;
+                }
+
+                positionInBlock = 0;
+
+                currIndirectBlock++;
+            }
         }
         else
-        {
-            file->filePosition += numbytes;
-            bytesWritten += numbytes;
-            strcat(tempBuffer, buf);
-            if (!write_sd_block(tempBuffer, file->inode->blocks[blockIndex]))
+        { // direct blocks
+            // check if we need to allocate this block
+            if (file->inode->blocks[currBlock] == NULL)
+            {
+                if (!read_sd_block(bitmap.map, 0))
+                {
+                    fserror = FS_IO_ERROR;
+                    break;
+                }
+                int16_t index = findFreeSpace();
+                if (index == -1)
+                {
+                    fserror = FS_OUT_OF_SPACE;
+                    break;
+                }
+                set_bit(index);
+                if (!write_sd_block(bitmap.map, 0))
+                {
+                    fserror = FS_IO_ERROR;
+                    break;
+                }
+                file->inode->blocks[currBlock] = index;
+                if (!write_to_disk(file->inode, INODE, file->directoryEntry->inodeBlockNum))
+                {
+                    fserror = FS_IO_ERROR;
+                    break;
+                }
+            }
+            unsigned char *currBuf = malloc(SOFTWARE_DISK_BLOCK_SIZE);
+            currBuf = read_data_from_disk(file->inode->blocks[currBlock], 0);
+            if (currBuf == NULL)
             {
                 fserror = FS_IO_ERROR;
-                return bytesWritten; // make sure that this is correct might cause problems
+                break;
             }
-            return bytesWritten;
+            int bytesToWrite = numbytes - bytesWritten;
+            int remainingSpaceInBlock = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
+
+            // need to figure out how many we can write to the file
+
+            // 2 options:
+            // we can fit the entire numbytes left in this block
+            if (bytesToWrite <= remainingSpaceInBlock)
+            {
+                // fully writing then we're done
+
+                strncpy(currBuf + positionInBlock, buf, bytesToWrite);
+                bytesWritten += bytesToWrite;
+                write_to_disk(currBuf, BLOCKS, file->inode->blocks[currBlock]);
+                positionInBlock = 0;
+                break;
+            }
+            else
+            {
+                // cant fit all lof buf in remaining space
+                strncpy(currBuf + positionInBlock, buf, remainingSpaceInBlock);
+                bytesWritten += remainingSpaceInBlock;
+                write_to_disk(currBuf, BLOCKS, file->inode->blocks[currBlock]);
+            }
         }
+        positionInBlock = 0;
+        currBlock++;
     }
-    fserror = FS_NONE;
+    file->filePosition = file->filePosition + bytesWritten;
     return bytesWritten;
 }
 
