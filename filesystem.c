@@ -85,7 +85,7 @@ typedef struct InodeBlock
 
 typedef struct DirEntry
 {                           // 1024 total
-    char *name;             // min 257 actually 1021
+    char name[MAX_FILE_NAME_SIZE];             // min 257 actually 1021
     bool isFileOpen;        // 1 byte
     uint16_t inodeBlockNum; // 2 bytes
 } DirEntry;
@@ -152,7 +152,8 @@ unsigned char *read_data_from_disk(uint16_t blocknum, uint32_t position)
 
 // reads type DataType at blocknum with optionl position in file
 void *read_from_disk(DataType type, uint16_t blocknum)
-{
+{   
+   // printf("READ FROM DISK\n");
     char buf[SOFTWARE_DISK_BLOCK_SIZE] = {'\0'};
 
     if (!read_sd_block(buf, blocknum))
@@ -172,8 +173,9 @@ void *read_from_disk(DataType type, uint16_t blocknum)
     {
         return NULL;
     }
-
+    
     memcpy(object, buf, size);
+   // printf("END READ FROM DISK\n");
     fserror = FS_NONE;
     return object;
 }
@@ -191,7 +193,18 @@ bool write_to_disk(void *data, DataType type, uint16_t blocknum)
     memcpy(buf, data, size);
 
     bool result = write_sd_block(buf, blocknum);
-    fserror = FS_NONE;
+
+    // testing
+    if (type == DIRECTORY_ENTRY) {
+        // read_sd_block(buf, blocknum);
+
+        // buf[SOFTWARE_DISK_BLOCK_SIZE-1] = '\0';
+
+        DirEntry *dirEntry = (DirEntry *) read_from_disk(DIRECTORY_ENTRY, blocknum);
+
+        // printf("testing writing %s\n", dirEntry->name);
+    }
+
     return result;
 }
 
@@ -203,11 +216,14 @@ bool clear_block(uint16_t blocknum)
     return write_to_disk(&clear, BLOCKS, blocknum);
 }
 
-char *getFullFileName(char *name, uint32_t length)
+char *getFullFileName(char *name, size_t length)
 {
+    if (length > MAX_FILE_NAME_SIZE) {
+        return NULL;
+    }
 
-    // Allocate exactly 1022 bytes
-    char *padded_name = (char *)malloc(1022);
+    // Allocate exactly 1021 bytes
+    char *padded_name = (char *)malloc(MAX_FILE_NAME_SIZE);
     if (!padded_name)
     {
         return NULL;
@@ -215,8 +231,10 @@ char *getFullFileName(char *name, uint32_t length)
 
     strncpy(padded_name, name, length);
 
-    // Fill the remaining bytes with '\0'
-    memset(padded_name + length, '\0', 1022 - length);
+    // Fill the remaining bytes with '\0', but apparently strncpy does this already
+    // memset(padded_name + length, '\0', MAX_FILE_NAME_SIZE - length);
+
+    padded_name[MAX_FILE_NAME_SIZE - 1] = '\0';
 
     return padded_name;
 }
@@ -225,29 +243,49 @@ char *getFullFileName(char *name, uint32_t length)
 // set jth bit in a bitmap composed of 8-bit integers
 void set_bit(uint16_t j)
 {
-    bitmap.map[j / 2] |= (1 << (j % 2));
+    bitmap.map[j / 8] |= (1 << (j % 8));
 }
 
-// clear jth bit in a bitmap composed of 8-but integers
+// clear jth bit in a bitmap composed of 8-bit integers
 void clear_bit(uint16_t j)
 {
-    bitmap.map[j / 2] &= ~(1 << (j % 2));
+    bitmap.map[j / 8] &= ~(1 << (j % 8));
 }
 
 // returns true if jth bit is set in a bitap of 8-bit integers,
 // otherwise false
-bool is_bit_set(unsigned char *bitmap, uint16_t j)
+bool is_bit_set(uint16_t j)
 {
-    return bitmap[j / 2] & (1 << (j % 2));
+    return bitmap.map[j / 8] & (1 << (j % 8));
 }
 
+// try to find an existing directory entry, if u cant 
 int16_t findDirEntry(char *name)
-{
+{   
+//    printf("FIND DIR ENTRY\n");
     // char buf[SOFTWARE_DISK_BLOCK_SIZE];
     read_sd_block(bitmap.map, 0);
     for (uint16_t i = DIR_ENTRY_FIRST_BLOCKNUM; i < DIR_ENTRY_FIRST_BLOCKNUM + MAX_NUMBER_OF_FILES; i++)
-    {
-        if (is_bit_set(bitmap.map, i))
+    {   
+        // printf("Checking for dir entry at block %d\n", i);
+        // if (i == 257) {
+        //     DirEntry *dirEntry = (DirEntry *)read_from_disk(DIRECTORY_ENTRY, i);
+        //     if (dirEntry == NULL) {
+        //         fserror = FS_IO_ERROR;
+        //         return -1;
+        //     }
+
+        //    printf("ABout to string compare\n");
+        //    printf("strlen of name passed in: %lu\n", strlen(name));
+        //    printf("strlen of DIR ENTRY name in: %lu\n", strlen(dirEntry->name));
+        //     if (strcmp(dirEntry->name, name) == 0) // its a match!
+        //     {
+        //        printf("FOUND A MATCH\n");
+        //         return i + DIR_ENTRY_FIRST_BLOCKNUM;
+        //     }
+        //    printf("Not a match");
+        // }
+        if (is_bit_set(i))
         {
             DirEntry *dirEntry = (DirEntry *)read_from_disk(DIRECTORY_ENTRY, i);
             if (dirEntry == NULL) {
@@ -255,14 +293,18 @@ int16_t findDirEntry(char *name)
                 return -1;
             }
 
-            if (!strcmp(dirEntry->name, name))
+        //    printf("ABout to string compare\n");
+        //    printf("strlen of name passed in: %lu\n", strlen(name));
+        //    printf("strlen of DIR ENTRY name in: %lu\n", strlen(dirEntry->name));
+            if (strcmp(dirEntry->name, name) == 0) // its a match!
             {
-                fserror = FS_NONE;
+            //    printf("FOUND A MATCH\n");
                 return i + DIR_ENTRY_FIRST_BLOCKNUM;
             }
+        //    printf("Not a match");
         }
     }
-    fserror = FS_FILE_ALREADY_EXISTS;
+//    printf("END FIND DIR ENTRY\n");
     return -1;
 }
 
@@ -271,7 +313,7 @@ int16_t findFreeDataSpace(void)
 {
     for (uint16_t j = FILE_DATA_FIRST_BLOCKNUM; j < FILE_SYSTEM_SIZE; j++)
     {
-        if (!is_bit_set(bitmap.map, j))
+        if (!is_bit_set(j))
         {
             return j;
         }
@@ -284,7 +326,7 @@ int16_t findFreeInodeSpace(void)
 {
     for (uint16_t j = INODE_FIRST_BLOCKNUM; j < INODE_FIRST_BLOCKNUM + MAX_NUMBER_OF_FILES; j++)
     {
-        if (!is_bit_set(bitmap.map, j))
+        if (!is_bit_set(j))
         {
             return j;
         }
@@ -296,7 +338,7 @@ int16_t findFreeDirEntrySpace(void)
 {
     for (uint16_t j = DIR_ENTRY_FIRST_BLOCKNUM; j < DIR_ENTRY_FIRST_BLOCKNUM + MAX_NUMBER_OF_FILES; j++)
     {
-        if (!is_bit_set(bitmap.map, j))
+        if (!is_bit_set(j))
         {
             return j;
         }
@@ -306,19 +348,19 @@ int16_t findFreeDirEntrySpace(void)
 
 // MAIN FUNCTIONS:
 
-File create_file(char *name) // might need to add a null terminating character during file creation
+File create_file(char *name)
 {   
     // printf("CREATE FILE\n");
     if (name[0] == '\0' || strlen(name) > 257)
     {
         fserror = FS_ILLEGAL_FILENAME;
-        printf("Illegal filename");
+       // printf("Illegal filename");
         return NULL;
     }
 
     int32_t index = -1; // tracks the index
 
-    char buf[SOFTWARE_DISK_BLOCK_SIZE];
+    // char buf[SOFTWARE_DISK_BLOCK_SIZE];
     bool success = read_sd_block(bitmap.map, 0);
     if (!success) {
         // printf("CREATE FILE READ BITMAP BLOCK FAILED\n");
@@ -331,9 +373,9 @@ File create_file(char *name) // might need to add a null terminating character d
     // reading dir entries to check for duplicate names
     for (uint16_t i = DIR_ENTRY_FIRST_BLOCKNUM; i < DIR_ENTRY_FIRST_BLOCKNUM + MAX_NUMBER_OF_FILES; i++)
     {
-        if (is_bit_set(bitmap.map, i))
+        if (is_bit_set(i))
         {
-            read_sd_block(buf, i);
+            // read_sd_block(buf, i);
 
             // We want the file to not exist yet with that name
             if (findDirEntry(name) != -1)
@@ -384,7 +426,10 @@ File create_file(char *name) // might need to add a null terminating character d
         // printf("CreateFile inodeblocknum couldnt find a spot\n");
         return NULL;
     }
-    set_bit(inodeBlockNum); // set the new Inode in bitmapp
+    set_bit((uint16_t)inodeBlockNum); // set the new Inode in bitmapp
+
+    // printf("INODE BLOCK: %d\n", inodeBlockNum);
+
 
 
     // write the inode and dir entry
@@ -396,9 +441,11 @@ File create_file(char *name) // might need to add a null terminating character d
 
     DirEntry *newDirEntry = malloc(sizeof(DirEntry));
     newDirEntry->inodeBlockNum = inodeBlockNum;
-    newDirEntry->name = getFullFileName(name, strlen(name));
+    char *fileName = getFullFileName(name, strlen(name));
+    strcpy(newDirEntry->name, fileName);
     newDirEntry->isFileOpen = false;
     file->directoryEntry = newDirEntry;
+    // printf("Creating a file with the name: %s\n", file->directoryEntry->name);
 
     uint16_t dirEntryBlockNum = (uint16_t)inodeBlockNum + MAX_NUMBER_OF_FILES;
     if (!write_to_disk(newDirEntry, DIRECTORY_ENTRY, dirEntryBlockNum))
@@ -407,6 +454,7 @@ File create_file(char *name) // might need to add a null terminating character d
         return NULL;
     }
     set_bit(dirEntryBlockNum); // marks the directory entry as taken
+    // printf("DIRENTRY BLOCK: %d\n", dirEntryBlockNum);
 
     file->filePosition = (uint32_t)0;
 
@@ -432,6 +480,7 @@ File open_file(char *name, FileMode mode)
         fserror = FS_FILE_NOT_FOUND;
         return NULL;
     }
+    // printf("File FOund\n");
 
     file->filePosition = 0;
     file->fileMode = mode;
@@ -452,8 +501,11 @@ File open_file(char *name, FileMode mode)
         fserror = FS_FILE_OPEN;
         return NULL;
     }
+    char *fileName = getFullFileName(name, strlen(name));
+    strcpy(dirEntry->name, fileName);
     dirEntry->isFileOpen = true;
     file->directoryEntry = dirEntry;
+    // printf("OPEN FILE name %s\n", file->directoryEntry->name);
 
     Inode *inode = malloc(sizeof(Inode));
     data = read_from_disk(INODE, (uint16_t)index);
@@ -475,15 +527,24 @@ File open_file(char *name, FileMode mode)
 }
 
 void close_file(File file)
-{
-    file->directoryEntry->isFileOpen = false;
-    write_to_disk(file->directoryEntry, DIRECTORY_ENTRY, file->directoryEntry->inodeBlockNum + DIR_ENTRY_FIRST_BLOCKNUM);
-    if (file == NULL)
-    {
-        fserror = FS_FILE_NOT_FOUND;
+{  
+    if (file == NULL || !file->directoryEntry->isFileOpen) {
+        fserror = FS_FILE_NOT_OPEN;
         return;
     }
+    // printf("CLOSING: File name: %s\n", file->directoryEntry->name);
+    if (findDirEntry("superfile") != -1) {
+        // printf("Found the superfile\n");
+    }
+    else {
+        // printf("didnt find the superfile\n");
+    }
+    file->directoryEntry->isFileOpen = false;
+
     fserror = FS_NONE;
+    if (!write_to_disk(file->directoryEntry, DIRECTORY_ENTRY, file->directoryEntry->inodeBlockNum + MAX_NUMBER_OF_FILES)) {
+        fserror = FS_IO_ERROR;
+    }
     free(file);
 }
 
@@ -497,7 +558,8 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
 
     fserror = FS_NONE;
 
-    char *tempBuf = malloc(numbytes * sizeof(char));
+    // char *tempBuf = malloc(numbytes * sizeof(char));
+    unsigned char *tempBuf = calloc(numbytes, sizeof(char)); // initialize it with zeros too
     uint64_t bytesRead = 0;
 
     int32_t size = file->inode->size;
@@ -526,7 +588,7 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                 // unsigned char *currBuf = malloc((SOFTWARE_DISK_BLOCK_SIZE - positionInBlock + 1) * sizeof(char));
                 // Software disk block size is 1024, so subtract the current position to get how many bytes you need to read total
                 //  Ex: if positionInBlock is 0 then we want to read SOFTWARE_DISK_BLOCK_SIZE size data, not positionInBlock size data
-                unsigned char *currBuf = read_data_from_disk(currIndirectBlock, positionInBlock);
+                unsigned char *currBuf = read_data_from_disk((uint16_t)indirectBlocks[currIndirectBlock], positionInBlock);
                 // for every iteration other than the first iteration the position is 0
                 if (currBuf == NULL)
                 {
@@ -549,13 +611,13 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                     if (SOFTWARE_DISK_BLOCK_SIZE - (uint64_t)positionInBlock < bytesLeftToRead)
                     {
                         bytesLeftToRead = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
-                        strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
+                        strncat((char *)tempBuf, (const char *) currBuf, bytesLeftToRead);
                         bytesRead += bytesLeftToRead;
                     }
                     else
                     {
                         // WE ARE DONE READING RAN OUT OF SPACE
-                        strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
+                        strncat((char *)tempBuf, (const char *) currBuf, bytesLeftToRead);
                         bytesRead += bytesLeftToRead;
                         break;
                     }
@@ -568,9 +630,11 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                     { // if the end of the file comes after how far I want to read
                         bytesLeftToRead = numbytes - bytesRead;
                     }
-                    strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
+                    strncat((char *)tempBuf, (const char *) currBuf, bytesLeftToRead);
                     bytesRead += bytesLeftToRead;
                 }
+
+                free(currBuf);
 
                 positionInBlock = 0;
 
@@ -583,7 +647,11 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
             // unsigned char *currBuf = malloc((SOFTWARE_DISK_BLOCK_SIZE - positionInBlock + 1) * sizeof(char));
             // Software disk block size is 1024, so subtract the current position to get how many bytes you need to read total
             //  Ex: if positionInBlock is 0 then we want to read SOFTWARE_DISK_BLOCK_SIZE size data, not positionInBlock size data
-            unsigned char *currBuf = read_data_from_disk(currBlock, positionInBlock);
+            unsigned char *currBuf = read_data_from_disk((uint16_t)file->inode->blocks[currBlock], positionInBlock);
+            
+            // printf("READ FILE at block %d:  %s\n", currBlock, currBuf);
+
+
             // for every iteration other than the first iteration the position is 0
             if (currBuf == NULL)
             {
@@ -605,13 +673,13 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                 if (SOFTWARE_DISK_BLOCK_SIZE - positionInBlock < bytesLeftToRead)
                 {
                     bytesLeftToRead = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
-                    strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
+                    strncat((char *)tempBuf, (const char *) currBuf, bytesLeftToRead);
                     bytesRead += bytesLeftToRead;
                 }
                 else
                 {
                     // WE ARE DONE READING RAN OUT OF SPACE
-                    strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
+                    strncat((char *)tempBuf, (const char *) currBuf, bytesLeftToRead);
                     bytesRead += bytesLeftToRead;
                     break;
                 }
@@ -624,16 +692,17 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                 { // if the end of the file comes after how far I want to read
                     bytesLeftToRead = numbytes - bytesRead;
                 }
-                strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
+                strncat((char *)tempBuf, (const char *) currBuf, bytesLeftToRead);
                 bytesRead += bytesLeftToRead;
             }
-
+            free(currBuf);
             positionInBlock = 0;
         }
         currBlock++;
     }
     file->filePosition += bytesRead;
-    buf = tempBuf;
+    strcpy((char *)buf, (const char *)tempBuf);
+    free(tempBuf);
     return bytesRead;
 }
 
@@ -659,6 +728,7 @@ bool delete_file(char *name)
     if (index == -1)
     {
         fserror = FS_FILE_NOT_FOUND;
+        // printf("cant find file with the name: %s\n", name);
         return false;
     }
     DirEntry *dirEntry;
@@ -700,9 +770,9 @@ bool delete_file(char *name)
             clear_bit(inode->blocks[i]); // set bitmap
         }
     }
-    if (inode->blocks[NUM_DIRECT_INODE_BLOCKS])
+    if (inode->blocks[NUM_DIRECT_INODE_BLOCKS-1])
     {
-        uint16_t *indirectBlocks = (uint16_t *)read_from_disk(inode->blocks[NUM_DIRECT_INODE_BLOCKS], BLOCKS);
+        uint16_t *indirectBlocks = (uint16_t *)read_from_disk(BLOCKS, inode->blocks[NUM_DIRECT_INODE_BLOCKS-1]);
         uint16_t i = 0;
         while (indirectBlocks[i] != (uint16_t)0)
         {
@@ -710,8 +780,8 @@ bool delete_file(char *name)
             clear_bit(indirectBlocks[i]); // set bitmap
             i++;
         }
-        clear_block(inode->blocks[NUM_DIRECT_INODE_BLOCKS]);
-        clear_bit(inode->blocks[NUM_DIRECT_INODE_BLOCKS]); // set bitmap
+        clear_block(inode->blocks[NUM_DIRECT_INODE_BLOCKS-1]);
+        clear_bit(inode->blocks[NUM_DIRECT_INODE_BLOCKS-1]); // set bitmap
         free(indirectBlocks);
     }
     clear_block(inodeBlockNum);
@@ -765,7 +835,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                 fserror = FS_EXCEEDS_MAX_FILE_SIZE;
                 break;
             }
-            uint16_t *indirectBlocks = (uint16_t *)read_from_disk(file->inode->blocks[NUM_DIRECT_INODE_BLOCKS], BLOCKS);
+            uint16_t *indirectBlocks = (uint16_t *)read_from_disk(BLOCKS, file->inode->blocks[NUM_DIRECT_INODE_BLOCKS]);
 
             while (currIndirectBlock < MAX_INDIRECT_BLOCK)
             {
@@ -922,18 +992,20 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
         }
     }
     // printf("END WRITE\n");
+    // printf("WRITE FILE name: %s", file->directoryEntry->name);
     return bytesWritten;
 }
 
 uint64_t file_length(File file)
 {
     fserror = FS_NONE;
+    // printf("FileName: %s\n", file->directoryEntry->name);
     return (uint64_t)file->inode->size;
 }
 
 bool file_exists(char *name)
 {
-    if (findDirEntry(name) > -1)
+    if (findDirEntry(name) != -1)
     {
         fserror = FS_NONE;
         return true;
