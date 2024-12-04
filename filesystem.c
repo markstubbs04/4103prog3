@@ -24,8 +24,7 @@ Dir Entries:
 
 Free data:
 13 direct + 512 indirect blocks = 525 blocks each
-525 blocks * 256 files =
-= 134,400 blocks
+Limited to 7679 Free Data block due to bitmap size
 
 We use 1 block for the bitmap, 256 for the Inodes, 256 for the Dir Entries that makes 513 blocks. Which leave 8192 - 513 = 7679 blocks for free data.
 
@@ -54,7 +53,6 @@ So, once the user gets to 7679 blocks, they will not be allowed to make anymore 
 #define FILE_SYSTEM_SIZE 8192
 
 #define MAX_FILE_NAME_SIZE 1021
-#define MAX_FILE_SIZE 256
 
 FSError fserror = FS_NONE;
 
@@ -269,11 +267,36 @@ int16_t findDirEntry(char *name)
 }
 
 // finds free space in the bitmap
-int16_t findFreeSpace(void)
+int16_t findFreeDataSpace(void)
 {
     for (uint16_t j = FILE_DATA_FIRST_BLOCKNUM; j < FILE_SYSTEM_SIZE; j++)
     {
-        if (is_bit_set(bitmap.map, j))
+        if (!is_bit_set(bitmap.map, j))
+        {
+            return j;
+        }
+    }
+    return -1;
+}
+
+// finds free space in the bitmap
+int16_t findFreeInodeSpace(void)
+{
+    for (uint16_t j = INODE_FIRST_BLOCKNUM; j < INODE_FIRST_BLOCKNUM + MAX_NUMBER_OF_FILES; j++)
+    {
+        if (!is_bit_set(bitmap.map, j))
+        {
+            return j;
+        }
+    }
+    return -1;
+}
+
+int16_t findFreeDirEntrySpace(void)
+{
+    for (uint16_t j = DIR_ENTRY_FIRST_BLOCKNUM; j < DIR_ENTRY_FIRST_BLOCKNUM + MAX_NUMBER_OF_FILES; j++)
+    {
+        if (!is_bit_set(bitmap.map, j))
         {
             return j;
         }
@@ -284,17 +307,26 @@ int16_t findFreeSpace(void)
 // MAIN FUNCTIONS:
 
 File create_file(char *name) // might need to add a null terminating character during file creation
-{
+{   
+    // printf("CREATE FILE\n");
     if (name[0] == '\0' || strlen(name) > 257)
     {
         fserror = FS_ILLEGAL_FILENAME;
+        printf("Illegal filename");
         return NULL;
     }
 
     int32_t index = -1; // tracks the index
 
     char buf[SOFTWARE_DISK_BLOCK_SIZE];
-    read_sd_block(bitmap.map, 0);
+    bool success = read_sd_block(bitmap.map, 0);
+    if (!success) {
+        // printf("CREATE FILE READ BITMAP BLOCK FAILED\n");
+        fserror = FS_IO_ERROR;
+        return NULL;
+    }
+    else {
+    }
     bool found = true;
     // reading dir entries to check for duplicate names
     for (uint16_t i = DIR_ENTRY_FIRST_BLOCKNUM; i < DIR_ENTRY_FIRST_BLOCKNUM + MAX_NUMBER_OF_FILES; i++)
@@ -320,59 +352,56 @@ File create_file(char *name) // might need to add a null terminating character d
     if (index == -1)
     {
         fserror = FS_OUT_OF_SPACE;
+        // printf("CreateFile directory entry couldnt find a spot\n");
         return NULL;
     }
 
     File file = malloc(sizeof(struct FileInternals));
 
-    Inode newInode;
-    newInode.size = 0;
-    memset(newInode.blocks, '\0', NUM_DIRECT_INODE_BLOCKS + 1);
-    file->inode = &newInode;
+    Inode *newInode = malloc(sizeof(Inode));
+    newInode->size = 0;
+    memset(newInode->blocks, '\0', NUM_DIRECT_INODE_BLOCKS + 1);
+    file->inode = newInode;
 
     // find the first data block that is available
-    int16_t blocknum = findFreeSpace();
+    int16_t blocknum = findFreeDataSpace();
     if (blocknum == -1)
     {
         fserror = FS_OUT_OF_SPACE;
+        //  printf("CreateFile INODE couldnt find a spot\n");
         return NULL;
     }
+    // printf("Checked for free space for INODE\n");
     file->inode->blocks[0] = (uint16_t)blocknum;
     clear_block((uint16_t)blocknum);
     set_bit((uint16_t)blocknum); // setting bitmap for when we allocate a block to newly opened file data
 
     // find a free space for the inode and dir entry
-    int16_t inodeBlockNum = -1;
-    for (uint16_t i = inodeBlockNum; i < INODE_FIRST_BLOCKNUM + INODE_BLOCK_SIZE; i++)
-    {
-        if (!is_bit_set(bitmap.map, (uint16_t)i))
-        {
-            inodeBlockNum = i;
-            break;
-        }
-    }
+    int16_t inodeBlockNum = findFreeInodeSpace();
     if (inodeBlockNum == -1)
     {
         fserror = FS_OUT_OF_SPACE;
+        // printf("CreateFile inodeblocknum couldnt find a spot\n");
         return NULL;
     }
     set_bit(inodeBlockNum); // set the new Inode in bitmapp
 
+
     // write the inode and dir entry
-    if (write_to_disk(&newInode, INODE, inodeBlockNum))
+    if (!write_to_disk(newInode, INODE, (uint16_t)inodeBlockNum))
     {
         fserror = FS_IO_ERROR;
         return NULL;
     }
 
-    DirEntry newDirEntry;
-    newDirEntry.inodeBlockNum = inodeBlockNum;
-    newDirEntry.name = getFullFileName(name, strlen(name));
-    newDirEntry.isFileOpen = false;
-    file->directoryEntry = &newDirEntry;
+    DirEntry *newDirEntry = malloc(sizeof(DirEntry));
+    newDirEntry->inodeBlockNum = inodeBlockNum;
+    newDirEntry->name = getFullFileName(name, strlen(name));
+    newDirEntry->isFileOpen = false;
+    file->directoryEntry = newDirEntry;
 
-    uint16_t dirEntryBlockNum = inodeBlockNum + MAX_FILE_SIZE;
-    if (write_to_disk(&newDirEntry, DIRECTORY_ENTRY, dirEntryBlockNum))
+    uint16_t dirEntryBlockNum = (uint16_t)inodeBlockNum + MAX_NUMBER_OF_FILES;
+    if (!write_to_disk(newDirEntry, DIRECTORY_ENTRY, dirEntryBlockNum))
     {
         fserror = FS_IO_ERROR;
         return NULL;
@@ -388,12 +417,14 @@ File create_file(char *name) // might need to add a null terminating character d
         return false;
     }
 
+    // printf("END CREATE\n");
     fserror = FS_NONE;
     return open_file(name, READ_WRITE);
 }
 
 File open_file(char *name, FileMode mode)
 {
+    // printf("OPENING\n");
     File file = malloc(sizeof(struct FileInternals));
     int16_t index = findDirEntry(name);
     if (index == -1)
@@ -405,7 +436,7 @@ File open_file(char *name, FileMode mode)
     file->filePosition = 0;
     file->fileMode = mode;
 
-    DirEntry *dirEntry;
+    DirEntry *dirEntry = malloc(sizeof(DirEntry));
     void *data = read_from_disk(DIRECTORY_ENTRY, (uint16_t)index);
     if (data == NULL)
     {
@@ -421,9 +452,10 @@ File open_file(char *name, FileMode mode)
         fserror = FS_FILE_OPEN;
         return NULL;
     }
+    dirEntry->isFileOpen = true;
     file->directoryEntry = dirEntry;
 
-    Inode *inode;
+    Inode *inode = malloc(sizeof(Inode));
     data = read_from_disk(INODE, (uint16_t)index);
     if (data == NULL)
     {
@@ -437,6 +469,7 @@ File open_file(char *name, FileMode mode)
 
     file->inode = inode;
 
+    // printf("END OPEN\n");
     fserror = FS_NONE;
     return file;
 }
@@ -697,6 +730,7 @@ bool delete_file(char *name)
 // starts writing at the current position and overwrites
 uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need to check bitmap and request space from the software disk and get that blocknum (pointer)
 {
+    // printf("WRITE\n");
     if (!file->directoryEntry->isFileOpen)
     {
         fserror = FS_FILE_NOT_OPEN;
@@ -742,7 +776,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                         fserror = FS_IO_ERROR;
                         break;
                     }
-                    int16_t blockNum = findFreeSpace();
+                    int16_t blockNum = findFreeDataSpace();
                     if (blockNum == -1)
                     {
                         fserror = FS_OUT_OF_SPACE;
@@ -816,7 +850,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                     fserror = FS_IO_ERROR;
                     break;
                 }
-                int16_t index = findFreeSpace();
+                int16_t index = findFreeDataSpace();
                 if (index == -1)
                 {
                     fserror = FS_OUT_OF_SPACE;
@@ -887,6 +921,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
             fserror = FS_IO_ERROR;
         }
     }
+    // printf("END WRITE\n");
     return bytesWritten;
 }
 
