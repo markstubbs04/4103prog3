@@ -205,7 +205,7 @@ bool clear_block(uint16_t blocknum)
     return write_to_disk(&clear, BLOCKS, blocknum);
 }
 
-char *getFullFileName(char *name, int length)
+char *getFullFileName(char *name, uint32_t length)
 {
 
     // Allocate exactly 1022 bytes
@@ -225,22 +225,22 @@ char *getFullFileName(char *name, int length)
 
 // BITMAP HELPERS:
 // set jth bit in a bitmap composed of 8-bit integers
-void set_bit(uint64_t j)
+void set_bit(uint16_t j)
 {
-    bitmap.map[j / 8] |= (1 << (j % 8));
+    bitmap.map[j / 2] |= (1 << (j % 2));
 }
 
 // clear jth bit in a bitmap composed of 8-but integers
-void clear_bit(uint64_t j)
+void clear_bit(uint16_t j)
 {
-    bitmap.map[j / 8] &= ~(1 << (j % 8));
+    bitmap.map[j / 2] &= ~(1 << (j % 2));
 }
 
 // returns true if jth bit is set in a bitap of 8-bit integers,
 // otherwise false
-bool is_bit_set(unsigned char *bitmap, uint64_t j)
+bool is_bit_set(unsigned char *bitmap, uint16_t j)
 {
-    return bitmap[j / 8] & (1 << (j % 8));
+    return bitmap[j / 2] & (1 << (j % 2));
 }
 
 int16_t findDirEntry(char *name)
@@ -269,7 +269,7 @@ int16_t findDirEntry(char *name)
 }
 
 // finds free space in the bitmap
-int16_t findFreeSpace()
+int16_t findFreeSpace(void)
 {
     for (uint16_t j = FILE_DATA_FIRST_BLOCKNUM; j < FILE_SYSTEM_SIZE; j++)
     {
@@ -302,7 +302,6 @@ File create_file(char *name) // might need to add a null terminating character d
         if (is_bit_set(bitmap.map, i))
         {
             read_sd_block(buf, i);
-            int len = strlen(name);
 
             // We want the file to not exist yet with that name
             if (findDirEntry(name) != -1)
@@ -324,7 +323,7 @@ File create_file(char *name) // might need to add a null terminating character d
         return NULL;
     }
 
-    File file;
+    File file = malloc(sizeof(struct FileInternals));
 
     Inode newInode;
     newInode.size = 0;
@@ -339,14 +338,14 @@ File create_file(char *name) // might need to add a null terminating character d
         return NULL;
     }
     file->inode->blocks[0] = (uint16_t)blocknum;
-    clear_block(blocknum);
+    clear_block((uint16_t)blocknum);
     set_bit((uint16_t)blocknum); // setting bitmap for when we allocate a block to newly opened file data
 
     // find a free space for the inode and dir entry
-    int inodeBlockNum = -1;
+    int16_t inodeBlockNum = -1;
     for (uint16_t i = inodeBlockNum; i < INODE_FIRST_BLOCKNUM + INODE_BLOCK_SIZE; i++)
     {
-        if (!is_bit_set(bitmap.map, i))
+        if (!is_bit_set(bitmap.map, (uint16_t)i))
         {
             inodeBlockNum = i;
             break;
@@ -372,7 +371,7 @@ File create_file(char *name) // might need to add a null terminating character d
     newDirEntry.isFileOpen = false;
     file->directoryEntry = &newDirEntry;
 
-    int dirEntryBlockNum = inodeBlockNum + MAX_FILE_SIZE;
+    uint16_t dirEntryBlockNum = inodeBlockNum + MAX_FILE_SIZE;
     if (write_to_disk(&newDirEntry, DIRECTORY_ENTRY, dirEntryBlockNum))
     {
         fserror = FS_IO_ERROR;
@@ -395,8 +394,8 @@ File create_file(char *name) // might need to add a null terminating character d
 
 File open_file(char *name, FileMode mode)
 {
-    File file;
-    uint32_t index = findDirEntry(name);
+    File file = malloc(sizeof(struct FileInternals));
+    int16_t index = findDirEntry(name);
     if (index == -1)
     {
         fserror = FS_FILE_NOT_FOUND;
@@ -407,7 +406,7 @@ File open_file(char *name, FileMode mode)
     file->fileMode = mode;
 
     DirEntry *dirEntry;
-    void *data = read_from_disk(DIRECTORY_ENTRY, index);
+    void *data = read_from_disk(DIRECTORY_ENTRY, (uint16_t)index);
     if (data == NULL)
     {
         fserror = FS_IO_ERROR;
@@ -425,7 +424,7 @@ File open_file(char *name, FileMode mode)
     file->directoryEntry = dirEntry;
 
     Inode *inode;
-    data = read_from_disk(INODE, index);
+    data = read_from_disk(INODE, (uint16_t)index);
     if (data == NULL)
     {
         fserror = FS_IO_ERROR;
@@ -470,25 +469,25 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
 
     int32_t size = file->inode->size;
 
-    int blockIndex = file->filePosition / SOFTWARE_DISK_BLOCK_SIZE;
-    int positionInBlock = file->filePosition % SOFTWARE_DISK_BLOCK_SIZE;
-    int indirectBlockIndex = 0;
+    int16_t blockIndex = file->filePosition / SOFTWARE_DISK_BLOCK_SIZE;
+    int16_t positionInBlock = file->filePosition % SOFTWARE_DISK_BLOCK_SIZE;
+    int16_t indirectBlockIndex = 0;
     if (blockIndex > NUM_DIRECT_INODE_BLOCKS)
     {
         indirectBlockIndex = blockIndex - NUM_DIRECT_INODE_BLOCKS;
         blockIndex = NUM_DIRECT_INODE_BLOCKS;
     }
-    int currBlock = blockIndex;
+    int16_t currBlock = blockIndex;
 
     // 13 direct + 1 indirect block, so dont want to exceed. 0 is a not set block
-    while (currBlock <= NUM_DIRECT_INODE_BLOCKS+1 && indirectBlockIndex < MAX_INDIRECT_BLOCK && file->inode->blocks[currBlock] != 0 && bytesRead + file->filePosition < size)
+    while (currBlock <= NUM_DIRECT_INODE_BLOCKS+1 && indirectBlockIndex < MAX_INDIRECT_BLOCK && file->inode->blocks[currBlock] != 0 && bytesRead + (uint64_t)file->filePosition < (uint64_t)size)
     {
         if (currBlock > NUM_DIRECT_INODE_BLOCKS) // at indirect block
         {
-            int currIndirectBlock = indirectBlockIndex;
-            uint16_t *indirectBlocks = (uint16_t *)read_from_disk(file->inode->blocks[NUM_DIRECT_INODE_BLOCKS], BLOCKS);
+            int16_t currIndirectBlock = indirectBlockIndex;
+            uint16_t *indirectBlocks = (uint16_t *)read_from_disk(BLOCKS, file->inode->blocks[NUM_DIRECT_INODE_BLOCKS]);
 
-            while (currIndirectBlock < MAX_INDIRECT_BLOCK && indirectBlocks[currIndirectBlock] != 0 && bytesRead + file->filePosition < size)
+            while (currIndirectBlock < MAX_INDIRECT_BLOCK && indirectBlocks[currIndirectBlock] != 0 && (int32_t)bytesRead + (int32_t)file->filePosition < size)
             {
                 // READ WHAT IS IN FRONT STARTING AT POSITION IN BLOCK
                 // unsigned char *currBuf = malloc((SOFTWARE_DISK_BLOCK_SIZE - positionInBlock + 1) * sizeof(char));
@@ -503,9 +502,9 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                 }
 
                 uint64_t currLength = strlen((const char *) currBuf);
-                int bytesLeftToRead = numbytes - bytesRead;
+                uint64_t bytesLeftToRead = numbytes - bytesRead;
                 // going to read more than the length of the file
-                if (bytesLeftToRead + file->filePosition > file->inode->size)
+                if ((int32_t)bytesLeftToRead + (int32_t)file->filePosition > file->inode->size)
                 {
                     bytesLeftToRead = file->inode->size - file->filePosition;
                 }
@@ -514,7 +513,7 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                 { // not done reading numbytes
 
                     // reads the smaller amount of data
-                    if (SOFTWARE_DISK_BLOCK_SIZE - positionInBlock < bytesLeftToRead)
+                    if (SOFTWARE_DISK_BLOCK_SIZE - (uint64_t)positionInBlock < bytesLeftToRead)
                     {
                         bytesLeftToRead = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
                         strncat(tempBuf, (const char *) currBuf, bytesLeftToRead);
@@ -559,9 +558,9 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
                 break;
             }
             uint64_t currLength = strlen((const char *) currBuf);
-            int bytesLeftToRead = numbytes - bytesRead;
+            int32_t bytesLeftToRead = numbytes - bytesRead;
             // going to read more than the length of the file
-            if (bytesLeftToRead + file->filePosition > file->inode->size)
+            if (bytesLeftToRead + (int32_t)file->filePosition > file->inode->size)
             {
                 bytesLeftToRead = file->inode->size - file->filePosition;
             }
@@ -588,7 +587,7 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
             { // last read of numbytes
 
                 // numbytes - bytesRead will never be greater than SOFTWARE_DISK_BLOCK_SIZE because of the previous if statement
-                if (bytesLeftToRead > numbytes - bytesRead)
+                if ((uint64_t)bytesLeftToRead > numbytes - bytesRead)
                 { // if the end of the file comes after how far I want to read
                     bytesLeftToRead = numbytes - bytesRead;
                 }
@@ -601,15 +600,15 @@ uint64_t read_file(File file, void *buf, uint64_t numbytes)
         currBlock++;
     }
     file->filePosition += bytesRead;
+    buf = tempBuf;
     return bytesRead;
 }
 
 bool seek_file(File file, uint64_t bytepos)
 {
-    int blockIndex = bytepos / SOFTWARE_DISK_BLOCK_SIZE;
-    int positionInBlock = bytepos % SOFTWARE_DISK_BLOCK_SIZE;
+    uint16_t blockIndex = bytepos / SOFTWARE_DISK_BLOCK_SIZE;
 
-    if (blockIndex > MAX_DIRECT_BLOCK + MAX_INDIRECT_BLOCK || file->inode->size < bytepos)
+    if (blockIndex > MAX_DIRECT_BLOCK + MAX_INDIRECT_BLOCK || (uint64_t)file->inode->size < bytepos)
     {
         fserror = FS_EXCEEDS_MAX_FILE_SIZE;
         return false;
@@ -646,7 +645,7 @@ bool delete_file(char *name)
         return false;
     }
     clear_block((uint16_t)index);
-    clear_bit(index); // set bitmap
+    clear_bit((uint16_t)index); // set bitmap
     uint16_t inodeBlockNum = dirEntry->inodeBlockNum;
     Inode *inode;
 
@@ -660,7 +659,7 @@ bool delete_file(char *name)
     {
         inode = (Inode *)data;
     }
-    for (int i = 0; i < 14; i++)
+    for (uint16_t i = 0; i < 14; i++)
     {
         if (inode->blocks[i])
         {
@@ -671,7 +670,7 @@ bool delete_file(char *name)
     if (inode->blocks[NUM_DIRECT_INODE_BLOCKS])
     {
         uint16_t *indirectBlocks = (uint16_t *)read_from_disk(inode->blocks[NUM_DIRECT_INODE_BLOCKS], BLOCKS);
-        int i = 0;
+        uint16_t i = 0;
         while (indirectBlocks[i] != (uint16_t)0)
         {
             clear_block(indirectBlocks[i]);
@@ -711,22 +710,22 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
 
     uint64_t bytesWritten = 0;
 
-    int blockIndex = file->filePosition / SOFTWARE_DISK_BLOCK_SIZE;
-    int positionInBlock = file->filePosition % SOFTWARE_DISK_BLOCK_SIZE;
-    int indirectBlockIndex = 0;
+    uint16_t blockIndex = file->filePosition / SOFTWARE_DISK_BLOCK_SIZE;
+    uint16_t positionInBlock = file->filePosition % SOFTWARE_DISK_BLOCK_SIZE;
+    uint16_t indirectBlockIndex = 0;
     if (blockIndex > NUM_DIRECT_INODE_BLOCKS)
     {
         indirectBlockIndex = blockIndex - NUM_DIRECT_INODE_BLOCKS;
         blockIndex = NUM_DIRECT_INODE_BLOCKS;
     }
-    int currBlock = blockIndex;
+    uint16_t currBlock = blockIndex;
 
     // 13 direct + 1 indirect block, so dont want to exceed. 0 is a not set block
     while (currBlock <= NUM_DIRECT_INODE_BLOCKS && indirectBlockIndex < MAX_INDIRECT_BLOCK && bytesWritten <= numbytes)
     {
         if (currBlock > NUM_DIRECT_INODE_BLOCKS) // at indirect block
         {
-            int currIndirectBlock = indirectBlockIndex;
+            uint16_t currIndirectBlock = indirectBlockIndex;
             if (currIndirectBlock >= MAX_INDIRECT_BLOCK)
             {
                 fserror = FS_EXCEEDS_MAX_FILE_SIZE;
@@ -749,7 +748,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                         fserror = FS_OUT_OF_SPACE;
                         break;
                     }
-                    set_bit(blockNum);
+                    set_bit((uint16_t)blockNum);
                     if (!write_sd_block(bitmap.map, 0))
                     {
                         fserror = FS_IO_ERROR;
@@ -769,8 +768,8 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                     fserror = FS_IO_ERROR;
                     break;
                 }
-                int bytesToWrite = numbytes - bytesWritten;
-                int remainingSpaceInBlock = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
+                int16_t bytesToWrite = numbytes - bytesWritten;
+                int16_t remainingSpaceInBlock = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
 
                 // need to figure out how many we can write to the file
 
@@ -823,7 +822,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                     fserror = FS_OUT_OF_SPACE;
                     break;
                 }
-                set_bit(index);
+                set_bit((uint16_t)index);
                 if (!write_sd_block(bitmap.map, 0))
                 {
                     fserror = FS_IO_ERROR;
@@ -843,8 +842,8 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
                 fserror = FS_IO_ERROR;
                 break;
             }
-            int bytesToWrite = numbytes - bytesWritten;
-            int remainingSpaceInBlock = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
+            int16_t bytesToWrite = numbytes - bytesWritten;
+            int16_t remainingSpaceInBlock = SOFTWARE_DISK_BLOCK_SIZE - positionInBlock;
 
             // need to figure out how many we can write to the file
 
@@ -880,7 +879,7 @@ uint64_t write_file(File file, void *buf, uint64_t numbytes) // I think we need 
         currBlock++;
     }
     file->filePosition = file->filePosition + bytesWritten;
-    if (file->filePosition > file->inode->size)
+    if ((int32_t)file->filePosition > file->inode->size)
     {
         file->inode->size = file->filePosition;
         if (!write_to_disk(file->inode, INODE, file->directoryEntry->inodeBlockNum))

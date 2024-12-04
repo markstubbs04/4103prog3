@@ -17,17 +17,17 @@ void set_jth_bit(uint64_t j)
     bitmap.map[j / 8] |= (1 << (j % 8));
 }
 
-void formatfs()
+void formatfs(void)
 {
     init_software_disk();
 
     memset(bitmap.map, 0, SOFTWARE_DISK_BLOCK_SIZE);
     set_jth_bit(0);
     write_sd_block(bitmap.map, 0);
-};
+}
 
-int main()
+int main(void)
 {
     formatfs();
     return 0;
-};
+}
